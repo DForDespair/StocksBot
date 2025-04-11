@@ -97,9 +97,22 @@ class StockBot(commands.Cog):
             if label == "branding":
                 logger.debug(f"[INFO] Setting thumbnail for {ticker} from branding.icon_url: {value}")
                 embed.set_thumbnail(url=value)
-                continue
-            embed.add_field(name=label, value=value, inline=False)
-        embed.set_footer(text="Data provided by Polygon.io")
+            elif label == "Market Capitalization":
+                market_cap = f"${value:,.2f}"
+                embed.add_field(name=label, value=market_cap, inline=False)
+            elif label in ["Total Number of Employees", "Shares Outstanding", "Class Shares Outstanding"]:
+                result = f"{value:,}"
+                embed.add_field(name=label, value=result, inline=False)
+            else:
+                embed.add_field(name=label, value=value, inline=False)
+        if "Market Capitalization" not in details:
+            if "Shares Outstanding" in details:
+                market_cap = details.get("Shares Outstanding") * price
+                embed.add_field(name="Market Capitalization", value=market_cap, inline=False)
+            elif "Class Shares Outstanding" in details:
+                market_cap = details.get("Shares Outstanding") * price
+                embed.add_field(name="Market Capitalization", value=market_cap, inline=False)
+        embed.set_footer(text="Data provided by Polygon.io (Data has a 15-min delay)")
         await ctx.send(embed=embed)
 
     def create_ticker_error_embed(self, ticker: str, error_message: str, request_id: str = None):
@@ -118,6 +131,91 @@ class StockBot(commands.Cog):
 
         return embed
 
+    @commands.command(name="topspy")
+    async def top_spy_movers(self, ctx):
+        logger.info(f"[COMMAND] !topspy invoked by {ctx.author}")
+
+        try:
+            snapshots = self.polygon_client.filter_spy_snapshots()
+        except Exception as e:
+            logger.exception(f"Error fetching SPY snapshots: {e}")
+            await ctx.send("❌ Failed to fetch S&P 500 stock data.")
+            return
+
+        if "error" in snapshots:
+            await ctx.send(f"❌ API Error: {snapshots['error']}")
+            return
+
+        sorted_data = sorted(snapshots.items(), key=lambda x: x[1].get("percent", 0), reverse=True)
+        top_gainers = sorted_data[:10]
+        top_losers = sorted_data[-10:][::-1] 
+
+        embed = discord.Embed(
+            title="📊 Top 10 Gainers & Losers in the S&P 500",
+            color=discord.Color.blue()
+        )
+
+        def format_entry(entry):
+            ticker, data = entry
+            percent = data.get("percent", 0)
+            return f"`{ticker}`: {percent:+.2f}%"
+
+        gainers_str = "\n".join(format_entry(entry) for entry in top_gainers)
+        losers_str = "\n".join(format_entry(entry) for entry in top_losers)
+
+        embed.add_field(name="📈 Gainers", value=gainers_str or "N/A", inline=True)
+        embed.add_field(name="📉 Losers", value=losers_str or "N/A", inline=True)
+
+        embed.set_footer(text="Data based on today's % change in S&P 500 (Polygon.io)")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="joever")
+    async def joever_check(self, ctx, raw_ticker: str):
+        ticker = raw_ticker.upper()
+        logger.info(f"[COMMAND] !joever invoked by {ctx.author} for ticker: {ticker}")
+
+        try:
+            snapshot = self.polygon_client.filter_snapshot_ticker(ticker)
+        except Exception as e:
+            logger.exception(f"Exception during joever check for {ticker}: {e}")
+            await ctx.send(f"❌ Could not fetch data for `{ticker}`.")
+            return
+
+        if not snapshot or "error" in snapshot:
+            await ctx.send(f"❌ Error: {snapshot.get('error', 'Unknown error')}")
+            return
+
+        pct_change = snapshot.get("percent")
+        close_price = snapshot.get("close")
+
+        if pct_change is None:
+            await ctx.send(f"⚠️ No percent data available for `{ticker}`.")
+            return
+
+        
+        if pct_change > 1.5:
+            title = f"🚀 ${ticker} is so back 🚀"
+            image_url = "https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExdjhndGN3czR0b3RybHZpOXNucGpjZGRnNDhpamxkejY3emIxbDMwYyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/rsANkiygv0Jpyn7mFC/giphy.gif"
+            color = discord.Color.green()
+        elif pct_change < -1.5:
+            title = f"😢 ${ticker} is so joever... 😭"
+            image_url = "https://media4.giphy.com/media/ERIB4ws3cw17uWN4mF/200w.gif?cid=6c09b952hm65rrscei4j4nsn0ylwn1ftn5q9mgq3ecdr1tl6&ep=v1_gifs_search&rid=200w.gif&ct=g"
+            color = discord.Color.red()
+        else:
+            title = f"${ticker} is stable"
+            image_url = "https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExcDQ0bDRycjgzbjR5Nnl4bmxmZW5pNjdidWR6dmJiamdvcHozNTA2aSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/OmSSWmIbtknHyHWcQ6/giphy.gif"
+            color = discord.Color.dark_gray()
+
+        embed = discord.Embed(title=title, color=color)
+        embed.add_field(name="Ticker", value=f"`{ticker}`", inline=True)
+        embed.add_field(name="Close Price", value=f"${close_price:,.2f}" if close_price else "N/A", inline=True)
+        embed.add_field(name="Change (%)", value=f"{pct_change:+.2f}%", inline=True)
+        embed.set_image(url=image_url)
+        embed.set_footer(text="Powered by Polygon.io | 15-min delayed data")
+
+        await ctx.send(embed=embed)
+
+
 class MyBot(commands.Bot):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -125,77 +223,11 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         await self.add_cog(StockBot(self))
 
-# Initialize and run the bot
-intents = discord.Intents.default()
-intents.message_content = True
-bot = MyBot(command_prefix="!", intents=intents)
-logger.info("Starting Discord bot...")
-bot.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    intents = discord.Intents.default()
+    intents.message_content = True
+    bot = MyBot(command_prefix="!", intents=intents)
+    logger.info("Starting Discord bot...")
+    bot.run(DISCORD_TOKEN)
 
-
-
-# client = RESTClient(api_key=POLYGON_API_KEY)
-
-# def filter_ticker_details(details):
-#     details_dict = details.__dict__
-#     filtered_dict = {}
-#     categories = {
-#         "active": "Trading Status", 
-#         "branding": "branding", 
-#         "cik": "CIK Code",
-#         "delisted_utc": "Delisted Time",
-#         "description": "Company Description",
-#         "homepage_url": "Homepage URL",
-#         "market": "Asset Class",
-#         "market_cap": "Market Capitalization",
-#         "name": "Company Name",
-#         "weighted_shares_outstanding": "Shares Outstanding",
-#         "share_class_shares_outstanding": "Shares Outstanding",
-#         "sic_code": "SIC Code",
-#         "sic_description": "SIC Description",
-#         "ticker": "Ticker",
-#         "total_employees": "Total Number of employees"}
-#     for details in details_dict:
-#         if details_dict.get(details, None) is None or details not in categories:
-#             print(f"{details} || {details_dict.get(details)}")
-#             continue
-#         if details == "branding":
-#             if hasattr(details_dict.get(details, None), "icon_url"):
-#                 filtered_dict["branding"] = details_dict.get(details, None).icon_url
-#         if details not in filtered_dict:
-#             filtered_dict[details] = details_dict.get(details, None)
-#     return filtered_dict
-
-# # details = client.get_ticker_details(ticker="INTC")
-# # print(details.__dict__)
-# # print("--------------------------------------\n")
-# # print(filter_ticker_details(details))
-
-# # url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-
-# # # Load the S&P 500 table
-# # sp500_df = pd.read_html(url)[0]
-
-# # # Extract only the ticker symbols
-# # sp500_tickers = sp500_df['Symbol']
-
-# # # Save to CSV
-# # sp500_tickers.to_csv("sp500_tickers.csv", index=False, header=True)
-
-# def filter_snapshot_ticker(ticker):
-#     try:
-#         snapshot = client.get_snapshot_ticker("stocks", ticker)
-#     except Exception as e:
-#         return {"error": f"{str(e)}"}
-#     filtered_dict = {}
-#     if hasattr(snapshot, "day"):
-#         if getattr(snapshot.day, "close") is not None:
-#             filtered_dict["close"] = snapshot.day.close
-#     if getattr(snapshot, "todays_change", None) is not None:
-#         filtered_dict["dollar"] = snapshot.todays_change
-#     if getattr(snapshot, "todays_change_percent", None) is not None:
-#         filtered_dict["percent"] = snapshot.todays_change_percent
-#     return filtered_dict
-
-# snapshot = filter_snapshot_ticker("TSLA")
 

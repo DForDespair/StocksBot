@@ -2,8 +2,9 @@ from dataclasses import dataclass
 from typing import Optional
 from polygon import RESTClient
 from polygon.exceptions import BadResponse, AuthError
-from polygon.rest.models import SnapshotMarketType
+from polygon.rest.models import SnapshotMarketType, TickerSnapshot, Agg
 import logging
+import pandas as pd
 
 # Configure logger for this module
 logger = logging.getLogger("stockbot")
@@ -30,6 +31,7 @@ class PolygonClient:
             "branding": "branding"
         }
         logger.info("PolygonClient initialized with API key.")
+        self.spy_tickers = pd.read_csv("./sp500_tickers.csv")["Symbol"].to_list()
 
     def filtered_ticker_details(self, ticker):
         logger.info(f"Fetching ticker details for: {ticker}")
@@ -86,3 +88,28 @@ class PolygonClient:
 
         logger.info(f"Finished filtering snapshot for {ticker}")
         return filtered_dict
+    
+    def filter_snapshot_multiple_ticker(self, tickers : list) -> dict:
+            logger.info(f"Fetching snapshot for: {tickers}")
+            try:
+                snapshot = self.client.get_snapshot_all("stocks", tickers=tickers)
+            except Exception as e:
+                logger.error(f"Error fetching snapshot for {tickers}: {e}", exc_info=True)
+                return {"error": f"{e}"}
+
+            filtered_dict = {}
+            
+            for item in snapshot:
+                if isinstance(item, TickerSnapshot) and isinstance(item.day, Agg) and isinstance(item.prev_day, Agg):
+                    filtered_dict[item.ticker] = {
+                        "dollar": item.todays_change,
+                        "percent": item.todays_change_percent,
+                        "close": item.day.close
+                    }
+                            
+                logger.info(f"Finished filtering snapshot for {item.ticker}")
+            return filtered_dict
+        
+    def filter_spy_snapshots(self) -> dict:
+        logger.info("Fetching snapshots for S&P 500 stocks")
+        return self.filter_snapshot_multiple_ticker(self.spy_tickers)
